@@ -154,14 +154,12 @@ async function updateLead(
 }
 
 /**
- * Main entry point. Decides what to do based on visitor purpose:
- *  - "Admission Enquiry - Existing" → skip Meritto entirely
- *  - "Admission Enquiry - New" → lookup; if found update, else create
+ * Main entry point. Only "Admission Enquiry - New" is pushed to Meritto/NPF CRM.
+ * All other purposes (HR, Re Visit, VC Office, Academics) are skipped.
  */
 export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
-  // Existing visitors: log locally only, do NOT push to CRM
-  if (v.purpose === 'Admission Enquiry - Existing') {
-    return { status: 'skipped', message: 'Existing enquiry — not pushed to CRM' };
+  if (v.purpose !== 'Admission Enquiry - New') {
+    return { status: 'skipped', message: `Purpose "${v.purpose}" — not pushed to CRM` };
   }
 
   const cfg = getConfig();

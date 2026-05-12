@@ -1,6 +1,9 @@
 export type VisitorPurpose =
+  | 'HR'
   | 'Admission Enquiry - New'
-  | 'Admission Enquiry - Existing';
+  | 'Admission Enquiry - Re Visit'
+  | 'VC Office'
+  | 'Academics';
 
 export interface Visitor {
   id: string;
