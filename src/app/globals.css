@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=Geist+Mono:wght@400;500&family=Geist:wght@300;400;500;600;700&display=swap');
+
+html, body {
+  font-family: 'Geist', system-ui, sans-serif;
+  background: #fbfaf6;
+  color: #0a0e1a;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(circle at 20% 10%, rgba(212, 160, 23, 0.05), transparent 40%),
+    radial-gradient(circle at 80% 90%, rgba(10, 37, 64, 0.04), transparent 50%);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: #4ade80;
+  border-radius: 50%;
+  margin-right: 8px;
+  animation: pulse-dot 2s infinite;
+}
+
+/* Focus styles matching original */
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: #d4a017 !important;
+  background: white !important;
+  box-shadow: 0 0 0 3px rgba(212, 160, 23, 0.15);
+}
+
+/* Print styles — A5 receipt */
+@media print {
+  body * { visibility: hidden; }
+  .receipt-wrap, .receipt-wrap * { visibility: visible; }
+  .receipt-actions { display: none !important; }
+  .receipt-wrap {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 148mm;
+    max-width: 148mm;
+    box-shadow: none;
+  }
+  @page { size: A5; margin: 0; }
+}
