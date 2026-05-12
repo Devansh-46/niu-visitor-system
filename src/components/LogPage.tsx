@@ -24,6 +24,15 @@ export function LogPage({ visitors, onReprint, onDelete, onClear, onExport, onSy
       v.id.toLowerCase().includes(s);
   });
 
+  const handleExport = () => {
+    const pwd = window.prompt('Enter password to download Excel:');
+    if (pwd === 'admin1536') {
+      onExport();
+    } else if (pwd !== null) {
+      alert('Incorrect password. Export cancelled.');
+    }
+  };
+
   return (
     <div>
       <h2 className="font-serif text-[32px] font-semibold text-niu-navy mb-1.5 -tracking-[0.5px]">
@@ -45,7 +54,7 @@ export function LogPage({ visitors, onReprint, onDelete, onClear, onExport, onSy
           />
         </div>
         <div className="flex gap-2">
-          <Btn variant="gold" onClick={onExport}>📊 Export Excel</Btn>
+          <Btn variant="gold" onClick={handleExport}>📊 Export Excel</Btn>
           <Btn variant="outline" onClick={onSyncSheets}>☁️ Sync to Sheets</Btn>
           <Btn variant="danger" onClick={onClear}>🗑 Clear Log</Btn>
         </div>
@@ -101,8 +110,8 @@ export function LogPage({ visitors, onReprint, onDelete, onClear, onExport, onSy
                   )}
                 </Td>
                 <Td>
-                  <div className="text-xs">{v.phone}</div>
-                  <div className="text-xs text-muted">{v.email}</div>
+                  <div className="text-xs">{maskPhone(v.phone)}</div>
+                  <div className="text-xs text-muted">{maskEmail(v.email)}</div>
                 </Td>
                 <Td>
                   <PurposePill purpose={v.purpose} />
@@ -131,6 +140,18 @@ export function LogPage({ visitors, onReprint, onDelete, onClear, onExport, onSy
       )}
     </div>
   );
+}
+
+function maskPhone(phone: string) {
+  if (!phone || phone.length < 4) return phone;
+  return phone.slice(0, 2) + '*'.repeat(phone.length - 4) + phone.slice(-2);
+}
+
+function maskEmail(email: string) {
+  if (!email || !email.includes('@')) return email;
+  const [name, domain] = email.split('@');
+  if (name.length <= 2) return `${name[0]}***@${domain}`;
+  return `${name.slice(0, 2)}${'*'.repeat(name.length - 3)}${name.slice(-1)}@${domain}`;
 }
 
 function Th({ children }: { children?: React.ReactNode }) {
