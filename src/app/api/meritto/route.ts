@@ -3,6 +3,9 @@ import { pushToMeritto } from '@/lib/meritto';
 import { Visitor } from '@/types';
 
 export const runtime = 'nodejs';
+// Run the function in Mumbai region — same as where most of your visitors
+// and the NPF API are. Cuts ~300-500ms off every call vs the US East default.
+export const preferredRegion = 'bom1';
 
 export async function POST(req: NextRequest) {
   try {

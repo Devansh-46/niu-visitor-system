@@ -3,29 +3,32 @@ import { Visitor, MerittoResponse } from '@/types';
 /**
  * Meritto / NPF CRM integration.
  *
+ * Auth model: NPF requires TWO headers on every request:
+ *   - `access-key`  (identifies your tenant)
+ *   - `secret-key`  (proves it's you)
+ * Both come from your Meritto account. Set them in env as
+ * MERITTO_ACCESS_KEY and MERITTO_SECRET_KEY.
+ *
  * Scope (per current product decision):
- *   - Only "Admission Enquiry - New" visitors are considered.
+ *   - Only "Admission Enquiry - New" visitors are pushed.
  *   - Flow: lookup by phone/email -> if found, SKIP (log locally only).
  *                                  -> if not found, CREATE new lead.
  *   - No update, no activity push.
  *
- * Notes for the dev plugging in real credentials:
+ * Dev notes:
  *   - This module runs server-side only (called from /api/meritto route).
- *     The API key never leaves the server.
- *   - Set MERITTO_DRY_RUN=true in env to simulate calls without hitting NPF.
- *     The route will return a "would_create" / "would_skip" status so you can
- *     verify the full pipeline (kiosk -> Next API -> meritto.ts) before going live.
- *   - The exact request shape (auth header name, field naming convention,
- *     response envelope) may differ per tenant. Search this file for
- *     `ADJUST:` comments — those are the spots most likely to need tweaks
- *     once you see a real request/response in the logs.
+ *     The keys never leave the server.
+ *   - Set MERITTO_DRY_RUN=true to simulate without hitting NPF.
+ *   - Search for `ADJUST:` comments — those are the spots most likely
+ *     to need tweaks once you see a real NPF response in the logs.
  */
 
 interface MerittoConfig {
   apiUrl: string;
-  apiKey: string;
+  accessKey: string;
+  secretKey: string;
   source: string;
-  lookupUrl: string; // optional — if blank, lookup is skipped
+  lookupUrl: string;
   fieldProgram: string;
   fieldMeetingWith: string;
   fieldNotes: string;
@@ -35,12 +38,14 @@ interface MerittoConfig {
 
 function getConfig(): MerittoConfig | null {
   const apiUrl = process.env.MERITTO_API_URL;
-  const apiKey = process.env.MERITTO_API_KEY;
+  const accessKey = process.env.MERITTO_ACCESS_KEY;
+  const secretKey = process.env.MERITTO_SECRET_KEY;
   const source = process.env.MERITTO_SOURCE_NAME;
-  if (!apiUrl || !apiKey || !source) return null;
+  if (!apiUrl || !accessKey || !secretKey || !source) return null;
   return {
     apiUrl,
-    apiKey,
+    accessKey,
+    secretKey,
     source,
     lookupUrl: process.env.MERITTO_LOOKUP_URL || '',
     fieldProgram: process.env.MERITTO_FIELD_PROGRAM || 'mx_program',
@@ -53,28 +58,25 @@ function getConfig(): MerittoConfig | null {
 
 /**
  * Normalize Indian mobile numbers to bare 10 digits.
- * Handles inputs like:
  *   "+91 98765 43210"  -> "9876543210"
  *   "919876543210"     -> "9876543210"
  *   "09876543210"      -> "9876543210"
  *   "9876543210"       -> "9876543210"
- * Anything that can't be normalized to 10 digits is returned as-is
- * so NPF can reject it (we want to see those errors, not silently drop).
+ * Anything else returned as-is so NPF can reject (we want to see it).
  */
 export function normalizePhone(raw: string): string {
-  const digits = raw.replace(/\D/g, ''); // strip everything non-numeric, including +
+  const digits = raw.replace(/\D/g, '');
   if (digits.length === 10) return digits;
   if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
   if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
   if (digits.length === 13 && digits.startsWith('091')) return digits.slice(3);
-  return digits; // fallback — let NPF validate
+  return digits;
 }
 
 /**
  * ADJUST: Field naming. The keys on the LEFT must match what your Meritto
- * admin panel shows as the "API field name" for each custom field. Common
- * conventions: `mx_*` (Meritto), `cf_*`, `custom_*`. Pull the real keys
- * from your tenant and put them in .env via MERITTO_FIELD_* vars.
+ * admin panel shows as the "API field name" for each custom field.
+ * Common conventions: mx_* (Meritto), cf_*, custom_*.
  */
 function buildCreatePayload(v: Visitor, cfg: MerittoConfig): Record<string, string> {
   return {
@@ -90,32 +92,30 @@ function buildCreatePayload(v: Visitor, cfg: MerittoConfig): Record<string, stri
 }
 
 /**
- * Redact secrets from a string before logging.
+ * Redact both keys from a string before logging.
  */
-function redact(s: string, apiKey: string): string {
-  if (!apiKey) return s;
-  return s.split(apiKey).join('***REDACTED***');
+function redact(s: string, cfg: MerittoConfig): string {
+  let out = s;
+  if (cfg.accessKey) out = out.split(cfg.accessKey).join('***ACCESS***');
+  if (cfg.secretKey) out = out.split(cfg.secretKey).join('***SECRET***');
+  return out;
 }
 
 /**
  * Single HTTP call with retry on 5xx (max 2 attempts).
- * Logs request + response with API key redacted.
- *
- * ADJUST: The auth header name. We're sending `api-key` based on NPF's
- * common public convention. If your tenant uses something different
- * (e.g. `access-key`, `Authorization: Bearer ...`, or key in body), change
- * the headers block below.
+ * Logs request + response with keys redacted.
  */
 async function callMeritto(
   url: string,
   body: Record<string, unknown>,
-  apiKey: string,
+  cfg: MerittoConfig,
   label: string,
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   const payloadStr = JSON.stringify(body);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'api-key': apiKey, // ADJUST if NPF docs say otherwise
+    'access-key': cfg.accessKey,
+    'secret-key': cfg.secretKey,
   };
 
   const maxAttempts = 2;
@@ -124,11 +124,11 @@ async function callMeritto(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       console.log(`[meritto:${label}] attempt ${attempt} POST ${url}`);
-      console.log(`[meritto:${label}] payload: ${redact(payloadStr, apiKey)}`);
+      console.log(`[meritto:${label}] payload: ${redact(payloadStr, cfg)}`);
 
       const res = await fetch(url, { method: 'POST', headers, body: payloadStr });
       const text = await res.text();
-      console.log(`[meritto:${label}] response ${res.status}: ${redact(text, apiKey)}`);
+      console.log(`[meritto:${label}] response ${res.status}: ${redact(text, cfg)}`);
 
       let data: Record<string, unknown> = {};
       try { data = text ? JSON.parse(text) : {}; } catch { /* keep empty */ }
@@ -153,19 +153,12 @@ async function callMeritto(
 }
 
 /**
- * Look up an existing lead by phone (preferred) or email.
- * Returns true if a lead already exists, false otherwise.
+ * Look up an existing lead by phone/email. Returns true if found.
+ * If MERITTO_LOOKUP_URL is blank, returns false (skip lookup entirely
+ * — NPF's own server-side dedup will then handle duplicates on create).
  *
- * If MERITTO_LOOKUP_URL is not configured, returns false (no lookup attempted,
- * we'll fall through to create — NPF's own dedup will catch duplicates).
- *
- * ADJUST: Response parsing. We treat ANY of these as "found":
- *   - data.data is a non-empty array
- *   - data.data.lead_id exists
- *   - data.lead_id exists
- *   - data.found === true
- *   - data.total > 0
- * Once you see a real response, narrow this to the actual shape.
+ * ADJUST: Response parsing — once you see a real response, narrow this
+ * to the actual shape.
  */
 async function lookupLeadExists(
   cfg: MerittoConfig,
@@ -178,12 +171,11 @@ async function lookupLeadExists(
     const { ok, data } = await callMeritto(
       cfg.lookupUrl,
       { mobile: normalizePhone(phone), email },
-      cfg.apiKey,
+      cfg,
       'lookup',
     );
     if (!ok) return false;
 
-    // Defensive parsing — try multiple common shapes
     const d = data as {
       lead_id?: unknown;
       leadId?: unknown;
@@ -201,8 +193,6 @@ async function lookupLeadExists(
     }
     return false;
   } catch (err) {
-    // If lookup throws after retries, log and treat as "not found" so we
-    // attempt the create. NPF will reject duplicates server-side.
     console.warn('[meritto:lookup] failed after retries, falling through to create:', err);
     return false;
   }
@@ -215,12 +205,11 @@ async function createLead(
   const payload = buildCreatePayload(v, cfg);
 
   try {
-    const { ok, status, data } = await callMeritto(cfg.apiUrl, payload, cfg.apiKey, 'create');
+    const { ok, status, data } = await callMeritto(cfg.apiUrl, payload, cfg, 'create');
 
-    // ADJUST: Success detection. NPF typically returns either:
-    //   { status: "Success", message: "...", data: { lead_id: "..." } }   (capital S)
-    //   { status: "error", message: "..." }
-    // We accept any of: ok=true AND no explicit error indicator.
+    // ADJUST: NPF typically returns:
+    //   { status: "Success", message: "...", data: { lead_id: "..." } }
+    //   { status: "error",   message: "..." }
     const d = data as {
       status?: string;
       message?: string;
@@ -234,8 +223,8 @@ async function createLead(
     const isErrorStatus = statusStr === 'error' || statusStr === 'failed' || statusStr === 'failure';
     const errMessage = d.error || d.message;
 
-    // Detect duplicate-on-create separately (we want to surface this as
-    // "duplicate", not "failed", so the operator sees a neutral pill).
+    // Detect duplicate-on-create separately — surface as "duplicate"
+    // (amber pill), not "failed" (red), so operator isn't alarmed.
     const looksDuplicate =
       isErrorStatus &&
       typeof errMessage === 'string' &&
@@ -272,25 +261,42 @@ async function createLead(
  *   1. Try lookup. If existing -> skip (log locally only).
  *   2. Otherwise -> create new lead.
  *
- * If MERITTO_DRY_RUN=true, no real HTTP calls are made; the function
- * returns what it WOULD have done so you can verify the pipeline.
+ * If MERITTO_DRY_RUN=true, no real HTTP calls are made.
  */
 export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
+  // Diagnostic log BEFORE any early-exit branches.
+  // Booleans only — no secret values are logged.
+  console.log('[meritto] entry', {
+    visitorId: v.id,
+    purpose: v.purpose,
+    hasApiUrl: !!process.env.MERITTO_API_URL,
+    hasAccessKey: !!process.env.MERITTO_ACCESS_KEY,
+    hasSecretKey: !!process.env.MERITTO_SECRET_KEY,
+    hasSource: !!process.env.MERITTO_SOURCE_NAME,
+    hasLookupUrl: !!process.env.MERITTO_LOOKUP_URL,
+    dryRun: process.env.MERITTO_DRY_RUN === 'true',
+  });
+
   if (v.purpose !== 'Admission Enquiry - New') {
+    console.log(`[meritto] skipped — purpose "${v.purpose}" not eligible`);
     return { status: 'skipped', message: `Purpose "${v.purpose}" — not pushed to CRM` };
   }
 
   const cfg = getConfig();
   if (!cfg) {
+    console.warn('[meritto] skipped — required env vars missing');
     return {
       status: 'skipped',
-      message: 'Meritto not configured (set MERITTO_API_URL, MERITTO_API_KEY, MERITTO_SOURCE_NAME)',
+      message: 'Meritto not configured (set MERITTO_API_URL, MERITTO_ACCESS_KEY, MERITTO_SECRET_KEY, MERITTO_SOURCE_NAME)',
     };
   }
 
   if (cfg.dryRun) {
-    console.log('[meritto] DRY RUN — no real API call. Visitor:', {
-      id: v.id, name: v.name, phone: normalizePhone(v.phone), email: v.email,
+    console.log('[meritto] DRY RUN — no real API call. Would send:', {
+      id: v.id,
+      name: v.name,
+      phone: normalizePhone(v.phone),
+      email: v.email,
     });
     return {
       status: 'skipped',
@@ -301,7 +307,7 @@ export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
   try {
     const exists = await lookupLeadExists(cfg, v.phone, v.email);
     if (exists) {
-      console.log(`[meritto] existing lead found for ${normalizePhone(v.phone)} — skipping`);
+      console.log(`[meritto] existing lead found for ${normalizePhone(v.phone)} — skipping per policy`);
       return {
         status: 'skipped',
         message: 'Existing lead found — skipped per policy',
@@ -310,6 +316,7 @@ export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
     return await createLead(cfg, v);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error('[meritto] unexpected error:', err);
     return { status: 'failed', error: message };
   }
 }
