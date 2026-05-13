@@ -3,24 +3,29 @@ import { Visitor, MerittoResponse } from '@/types';
 /**
  * Meritto / NPF CRM integration.
  *
- * Auth model: NPF requires TWO headers on every request:
- *   - `access-key`  (identifies your tenant)
- *   - `secret-key`  (proves it's you)
- * Both come from your Meritto account. Set them in env as
- * MERITTO_ACCESS_KEY and MERITTO_SECRET_KEY.
+ * Endpoints (api.nopaperforms.io):
+ *   - POST /lead/v1/getDetailsByMobileNumber   — lookup by mobile
+ *   - POST /lead/v1/createOrUpdate             — create or update a lead
  *
- * Scope (per current product decision):
+ * Auth: both `access-key` and `secret-key` headers on every request.
+ *
+ * Flow (per current product decision):
  *   - Only "Admission Enquiry - New" visitors are pushed.
- *   - Flow: lookup by phone/email -> if found, SKIP (log locally only).
- *                                  -> if not found, CREATE new lead.
- *   - No update, no activity push.
+ *   - Step 1: lookup by mobile.
+ *     - If existing lead found -> SKIP (log locally only, do NOT push).
+ *     - Otherwise -> Step 2.
+ *   - Step 2: call createOrUpdate (NPF will create since mobile is new).
+ *
+ * NOTE: NPF's createOrUpdate normally updates existing leads automatically.
+ * Our explicit lookup-then-skip is what enforces the "don't touch repeat
+ * visitors" policy. If that policy ever changes, just remove the lookup
+ * step and createOrUpdate will handle both paths.
  *
  * Dev notes:
- *   - This module runs server-side only (called from /api/meritto route).
- *     The keys never leave the server.
+ *   - Server-side only (called from /api/meritto route). Keys stay server-side.
  *   - Set MERITTO_DRY_RUN=true to simulate without hitting NPF.
- *   - Search for `ADJUST:` comments — those are the spots most likely
- *     to need tweaks once you see a real NPF response in the logs.
+ *   - `ADJUST:` comments mark spots that may still need tweaks once you
+ *     see the first real lookup/create response in the logs.
  */
 
 interface MerittoConfig {
@@ -61,8 +66,6 @@ function getConfig(): MerittoConfig | null {
  *   "+91 98765 43210"  -> "9876543210"
  *   "919876543210"     -> "9876543210"
  *   "09876543210"      -> "9876543210"
- *   "9876543210"       -> "9876543210"
- * Anything else returned as-is so NPF can reject (we want to see it).
  */
 export function normalizePhone(raw: string): string {
   const digits = raw.replace(/\D/g, '');
@@ -74,9 +77,9 @@ export function normalizePhone(raw: string): string {
 }
 
 /**
- * ADJUST: Field naming. The keys on the LEFT must match what your Meritto
- * admin panel shows as the "API field name" for each custom field.
- * Common conventions: mx_* (Meritto), cf_*, custom_*.
+ * ADJUST: The keys on the LEFT must match what your Meritto admin panel
+ * shows as the "API field name" for each custom field. Configure via
+ * env vars MERITTO_FIELD_* — no code change needed if naming differs.
  */
 function buildCreatePayload(v: Visitor, cfg: MerittoConfig): Record<string, string> {
   return {
@@ -91,9 +94,6 @@ function buildCreatePayload(v: Visitor, cfg: MerittoConfig): Record<string, stri
   };
 }
 
-/**
- * Redact both keys from a string before logging.
- */
 function redact(s: string, cfg: MerittoConfig): string {
   let out = s;
   if (cfg.accessKey) out = out.split(cfg.accessKey).join('***ACCESS***');
@@ -133,7 +133,6 @@ async function callMeritto(
       let data: Record<string, unknown> = {};
       try { data = text ? JSON.parse(text) : {}; } catch { /* keep empty */ }
 
-      // Retry only on 5xx
       if (res.status >= 500 && attempt < maxAttempts) {
         await new Promise((r) => setTimeout(r, 400 * attempt));
         continue;
@@ -153,44 +152,54 @@ async function callMeritto(
 }
 
 /**
- * Look up an existing lead by phone/email. Returns true if found.
- * If MERITTO_LOOKUP_URL is blank, returns false (skip lookup entirely
- * — NPF's own server-side dedup will then handle duplicates on create).
+ * Look up an existing lead by mobile via getDetailsByMobileNumber.
+ * Returns true if a lead exists for this mobile, false otherwise.
  *
- * ADJUST: Response parsing — once you see a real response, narrow this
- * to the actual shape.
+ * "Not found" can be signaled by HTTP 4xx, status=error in body, or
+ * an empty/missing data object — all three are treated as no lead.
+ *
+ * ADJUST: Once you see the first real lookup response in the logs,
+ * narrow the parsing below to the actual shape.
  */
 async function lookupLeadExists(
   cfg: MerittoConfig,
   phone: string,
-  email: string,
 ): Promise<boolean> {
   if (!cfg.lookupUrl) return false;
 
   try {
     const { ok, data } = await callMeritto(
       cfg.lookupUrl,
-      { mobile: normalizePhone(phone), email },
+      { mobile: normalizePhone(phone) },
       cfg,
       'lookup',
     );
     if (!ok) return false;
 
     const d = data as {
+      status?: string;
       lead_id?: unknown;
       leadId?: unknown;
-      found?: unknown;
-      total?: unknown;
       data?: unknown;
     };
-    if (d.lead_id || d.leadId) return true;
-    if (d.found === true) return true;
-    if (typeof d.total === 'number' && d.total > 0) return true;
-    if (Array.isArray(d.data) && d.data.length > 0) return true;
-    if (d.data && typeof d.data === 'object') {
-      const nested = d.data as { lead_id?: unknown; leadId?: unknown };
-      if (nested.lead_id || nested.leadId) return true;
+
+    const statusStr = (d.status || '').toString().toLowerCase();
+    if (statusStr === 'error' || statusStr === 'failed' || statusStr === 'failure') {
+      return false;
     }
+
+    if (d.lead_id || d.leadId) return true;
+
+    if (Array.isArray(d.data) && d.data.length > 0) return true;
+
+    if (d.data && typeof d.data === 'object' && !Array.isArray(d.data)) {
+      const nested = d.data as Record<string, unknown>;
+      if (nested.lead_id || nested.leadId) return true;
+      // Some NPF tenants return the lead object directly under `data`;
+      // any non-empty object means a lead was found.
+      if (Object.keys(nested).length > 0) return true;
+    }
+
     return false;
   } catch (err) {
     console.warn('[meritto:lookup] failed after retries, falling through to create:', err);
@@ -207,7 +216,7 @@ async function createLead(
   try {
     const { ok, status, data } = await callMeritto(cfg.apiUrl, payload, cfg, 'create');
 
-    // ADJUST: NPF typically returns:
+    // ADJUST: NPF's createOrUpdate typically returns:
     //   { status: "Success", message: "...", data: { lead_id: "..." } }
     //   { status: "error",   message: "..." }
     const d = data as {
@@ -223,8 +232,6 @@ async function createLead(
     const isErrorStatus = statusStr === 'error' || statusStr === 'failed' || statusStr === 'failure';
     const errMessage = d.error || d.message;
 
-    // Detect duplicate-on-create separately — surface as "duplicate"
-    // (amber pill), not "failed" (red), so operator isn't alarmed.
     const looksDuplicate =
       isErrorStatus &&
       typeof errMessage === 'string' &&
@@ -254,14 +261,7 @@ async function createLead(
 }
 
 /**
- * Main entry point. Only "Admission Enquiry - New" is pushed to Meritto.
- * All other purposes (HR, Re Visit, VC Office, Academics) are skipped.
- *
- * For new-enquiry visitors:
- *   1. Try lookup. If existing -> skip (log locally only).
- *   2. Otherwise -> create new lead.
- *
- * If MERITTO_DRY_RUN=true, no real HTTP calls are made.
+ * Main entry point.
  */
 export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
   // Diagnostic log BEFORE any early-exit branches.
@@ -305,7 +305,7 @@ export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
   }
 
   try {
-    const exists = await lookupLeadExists(cfg, v.phone, v.email);
+    const exists = await lookupLeadExists(cfg, v.phone);
     if (exists) {
       console.log(`[meritto] existing lead found for ${normalizePhone(v.phone)} — skipping per policy`);
       return {
