@@ -7,26 +7,24 @@ import { Visitor, MerittoResponse } from '@/types';
  *   - POST /lead/v1/getDetailsByMobileNumber   — lookup by mobile
  *   - POST /lead/v1/createOrUpdate             — create or update a lead
  *
- * Auth: both `access-key` and `secret-key` headers on every request.
+ * Auth: NPF tenants vary in how they accept credentials. To avoid getting
+ * stuck on a guessing game (lowercase vs PascalCase headers, headers vs
+ * body, `api-key` vs `access-key`...), this module PROBES four common
+ * auth conventions on the first call of each request. Whichever one gets
+ * past 401 is then reused for the rest of the request.
+ *
+ * The four conventions tried, in order:
+ *   1. headers `access-key` + `secret-key` (lowercase)
+ *   2. headers `Access-Key` + `Secret-Key` (PascalCase)
+ *   3. headers `Authorization: Bearer <secret>` + `access-key`
+ *   4. body fields `access_key` + `secret_key`
  *
  * Flow (per current product decision):
  *   - Only "Admission Enquiry - New" visitors are pushed.
- *   - Step 1: lookup by mobile.
- *     - If existing lead found -> SKIP (log locally only, do NOT push).
- *     - Otherwise -> Step 2.
- *   - Step 2: call createOrUpdate (NPF will create since mobile is new).
- *
- * NOTE: NPF's createOrUpdate normally updates existing leads automatically.
- * Our explicit lookup-then-skip is what enforces the "don't touch repeat
- * visitors" policy. If that policy ever changes, just remove the lookup
- * step and createOrUpdate will handle both paths.
- *
- * Dev notes:
- *   - Server-side only (called from /api/meritto route). Keys stay server-side.
- *   - Set MERITTO_DRY_RUN=true to simulate without hitting NPF.
- *   - `ADJUST:` comments mark spots that may still need tweaks once you
- *     see the first real lookup/create response in the logs.
+ *   - Lookup by mobile -> if found, SKIP. Otherwise -> createOrUpdate.
  */
+
+type AuthScheme = 'lower-headers' | 'pascal-headers' | 'bearer' | 'body';
 
 interface MerittoConfig {
   apiUrl: string;
@@ -61,12 +59,6 @@ function getConfig(): MerittoConfig | null {
   };
 }
 
-/**
- * Normalize Indian mobile numbers to bare 10 digits.
- *   "+91 98765 43210"  -> "9876543210"
- *   "919876543210"     -> "9876543210"
- *   "09876543210"      -> "9876543210"
- */
 export function normalizePhone(raw: string): string {
   const digits = raw.replace(/\D/g, '');
   if (digits.length === 10) return digits;
@@ -76,11 +68,6 @@ export function normalizePhone(raw: string): string {
   return digits;
 }
 
-/**
- * ADJUST: The keys on the LEFT must match what your Meritto admin panel
- * shows as the "API field name" for each custom field. Configure via
- * env vars MERITTO_FIELD_* — no code change needed if naming differs.
- */
 function buildCreatePayload(v: Visitor, cfg: MerittoConfig): Record<string, string> {
   return {
     name: v.name,
@@ -102,170 +89,124 @@ function redact(s: string, cfg: MerittoConfig): string {
 }
 
 /**
- * Single HTTP call with retry on 5xx (max 2 attempts).
- * Logs request + response with keys redacted.
+ * Build the headers + body combo for a given auth scheme.
  */
-async function callMeritto(
-  url: string,
-  body: Record<string, unknown>,
+function applyAuth(
+  scheme: AuthScheme,
   cfg: MerittoConfig,
-  label: string,
-): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
-  const payloadStr = JSON.stringify(body);
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'access-key': cfg.accessKey,
-    'secret-key': cfg.secretKey,
-  };
-
-  const maxAttempts = 2;
-  let lastErr: unknown = null;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      console.log(`[meritto:${label}] attempt ${attempt} POST ${url}`);
-      console.log(`[meritto:${label}] payload: ${redact(payloadStr, cfg)}`);
-
-      const res = await fetch(url, { method: 'POST', headers, body: payloadStr });
-      const text = await res.text();
-      console.log(`[meritto:${label}] response ${res.status}: ${redact(text, cfg)}`);
-
-      let data: Record<string, unknown> = {};
-      try { data = text ? JSON.parse(text) : {}; } catch { /* keep empty */ }
-
-      if (res.status >= 500 && attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, 400 * attempt));
-        continue;
-      }
-      return { ok: res.ok, status: res.status, data };
-    } catch (err) {
-      lastErr = err;
-      console.warn(`[meritto:${label}] network error attempt ${attempt}:`, err);
-      if (attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, 400 * attempt));
-        continue;
-      }
-    }
+  body: Record<string, unknown>,
+): { headers: Record<string, string>; body: Record<string, unknown> } {
+  const baseHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+  switch (scheme) {
+    case 'lower-headers':
+      return {
+        headers: { ...baseHeaders, 'access-key': cfg.accessKey, 'secret-key': cfg.secretKey },
+        body,
+      };
+    case 'pascal-headers':
+      return {
+        headers: { ...baseHeaders, 'Access-Key': cfg.accessKey, 'Secret-Key': cfg.secretKey },
+        body,
+      };
+    case 'bearer':
+      return {
+        headers: {
+          ...baseHeaders,
+          'Authorization': `Bearer ${cfg.secretKey}`,
+          'access-key': cfg.accessKey,
+        },
+        body,
+      };
+    case 'body':
+      return {
+        headers: baseHeaders,
+        body: { ...body, access_key: cfg.accessKey, secret_key: cfg.secretKey },
+      };
   }
-
-  throw lastErr instanceof Error ? lastErr : new Error('Meritto network error');
 }
 
 /**
- * Look up an existing lead by mobile via getDetailsByMobileNumber.
- * Returns true if a lead exists for this mobile, false otherwise.
- *
- * "Not found" can be signaled by HTTP 4xx, status=error in body, or
- * an empty/missing data object — all three are treated as no lead.
- *
- * ADJUST: Once you see the first real lookup response in the logs,
- * narrow the parsing below to the actual shape.
+ * Single HTTP call with a specific auth scheme. No retry — the caller
+ * (probeAuth or the direct call) decides what to do with 401s.
+ * Logs request + response with keys redacted.
  */
-async function lookupLeadExists(
+async function callOnce(
+  url: string,
+  body: Record<string, unknown>,
   cfg: MerittoConfig,
-  phone: string,
-): Promise<boolean> {
-  if (!cfg.lookupUrl) return false;
+  scheme: AuthScheme,
+  label: string,
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown>; rawText: string }> {
+  const { headers, body: finalBody } = applyAuth(scheme, cfg, body);
+  const payloadStr = JSON.stringify(finalBody);
 
-  try {
-    const { ok, data } = await callMeritto(
-      cfg.lookupUrl,
-      { mobile: normalizePhone(phone) },
-      cfg,
-      'lookup',
-    );
-    if (!ok) return false;
+  console.log(`[meritto:${label}] POST ${url} (auth=${scheme})`);
+  console.log(`[meritto:${label}] payload: ${redact(payloadStr, cfg)}`);
 
-    const d = data as {
-      status?: string;
-      lead_id?: unknown;
-      leadId?: unknown;
-      data?: unknown;
-    };
+  const res = await fetch(url, { method: 'POST', headers, body: payloadStr });
+  const text = await res.text();
+  console.log(`[meritto:${label}] response ${res.status} (auth=${scheme}): ${redact(text, cfg)}`);
 
-    const statusStr = (d.status || '').toString().toLowerCase();
-    if (statusStr === 'error' || statusStr === 'failed' || statusStr === 'failure') {
-      return false;
-    }
-
-    if (d.lead_id || d.leadId) return true;
-
-    if (Array.isArray(d.data) && d.data.length > 0) return true;
-
-    if (d.data && typeof d.data === 'object' && !Array.isArray(d.data)) {
-      const nested = d.data as Record<string, unknown>;
-      if (nested.lead_id || nested.leadId) return true;
-      // Some NPF tenants return the lead object directly under `data`;
-      // any non-empty object means a lead was found.
-      if (Object.keys(nested).length > 0) return true;
-    }
-
-    return false;
-  } catch (err) {
-    console.warn('[meritto:lookup] failed after retries, falling through to create:', err);
-    return false;
-  }
+  let data: Record<string, unknown> = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { /* keep empty */ }
+  return { ok: res.ok, status: res.status, data, rawText: text };
 }
 
-async function createLead(
+/**
+ * Probe auth schemes against the lookup endpoint. Returns the first
+ * scheme that doesn't get a 401, along with the data from that call
+ * (so we don't waste it). Returns null if all 4 fail with 401.
+ */
+async function probeAuth(
   cfg: MerittoConfig,
-  v: Visitor,
-): Promise<MerittoResponse> {
-  const payload = buildCreatePayload(v, cfg);
-
-  try {
-    const { ok, status, data } = await callMeritto(cfg.apiUrl, payload, cfg, 'create');
-
-    // ADJUST: NPF's createOrUpdate typically returns:
-    //   { status: "Success", message: "...", data: { lead_id: "..." } }
-    //   { status: "error",   message: "..." }
-    const d = data as {
-      status?: string;
-      message?: string;
-      error?: string;
-      lead_id?: string;
-      leadId?: string;
-      data?: { lead_id?: string; leadId?: string };
-    };
-
-    const statusStr = (d.status || '').toString().toLowerCase();
-    const isErrorStatus = statusStr === 'error' || statusStr === 'failed' || statusStr === 'failure';
-    const errMessage = d.error || d.message;
-
-    const looksDuplicate =
-      isErrorStatus &&
-      typeof errMessage === 'string' &&
-      /duplicate|already\s*exist|exists/i.test(errMessage);
-
-    if (looksDuplicate) {
-      return { status: 'duplicate', message: errMessage };
+  body: Record<string, unknown>,
+): Promise<{ scheme: AuthScheme; result: { ok: boolean; status: number; data: Record<string, unknown> } } | null> {
+  const schemes: AuthScheme[] = ['lower-headers', 'pascal-headers', 'bearer', 'body'];
+  for (const scheme of schemes) {
+    try {
+      const result = await callOnce(cfg.lookupUrl, body, cfg, scheme, 'lookup');
+      if (result.status !== 401) {
+        console.log(`[meritto] auth scheme "${scheme}" accepted (status ${result.status})`);
+        return { scheme, result };
+      }
+      console.log(`[meritto] auth scheme "${scheme}" rejected with 401, trying next`);
+    } catch (err) {
+      console.warn(`[meritto] auth scheme "${scheme}" threw:`, err);
     }
-
-    if (!ok || isErrorStatus) {
-      return {
-        status: 'failed',
-        error: errMessage || `HTTP ${status}`,
-      };
-    }
-
-    const leadId = d.lead_id || d.leadId || d.data?.lead_id || d.data?.leadId;
-    return {
-      status: 'created',
-      leadId,
-      message: 'Lead created in Meritto',
-    };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    return { status: 'failed', error: message };
   }
+  return null;
+}
+
+/**
+ * Parse a lookup response to determine if a lead already exists.
+ */
+function lookupResponseHasLead(data: Record<string, unknown>): boolean {
+  const d = data as {
+    status?: string | boolean;
+    lead_id?: unknown;
+    leadId?: unknown;
+    data?: unknown;
+  };
+
+  // Explicit failure status
+  if (d.status === false) return false;
+  const statusStr = (typeof d.status === 'string' ? d.status : '').toLowerCase();
+  if (statusStr === 'error' || statusStr === 'failed' || statusStr === 'failure') return false;
+
+  if (d.lead_id || d.leadId) return true;
+  if (Array.isArray(d.data) && d.data.length > 0) return true;
+  if (d.data && typeof d.data === 'object' && !Array.isArray(d.data)) {
+    const nested = d.data as Record<string, unknown>;
+    if (nested.lead_id || nested.leadId) return true;
+    if (Object.keys(nested).length > 0) return true;
+  }
+  return false;
 }
 
 /**
  * Main entry point.
  */
 export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
-  // Diagnostic log BEFORE any early-exit branches.
-  // Booleans only — no secret values are logged.
   console.log('[meritto] entry', {
     visitorId: v.id,
     purpose: v.purpose,
@@ -292,28 +233,85 @@ export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
   }
 
   if (cfg.dryRun) {
-    console.log('[meritto] DRY RUN — no real API call. Would send:', {
-      id: v.id,
-      name: v.name,
-      phone: normalizePhone(v.phone),
-      email: v.email,
-    });
+    console.log('[meritto] DRY RUN — no real API call.');
+    return { status: 'skipped', message: 'DRY RUN' };
+  }
+
+  if (!cfg.lookupUrl) {
     return {
-      status: 'skipped',
-      message: 'DRY RUN — would have looked up + created lead',
+      status: 'failed',
+      error: 'MERITTO_LOOKUP_URL not configured — required for auth probing',
     };
   }
 
   try {
-    const exists = await lookupLeadExists(cfg, v.phone);
-    if (exists) {
+    // Step 1: probe auth schemes via lookup
+    const probe = await probeAuth(cfg, { mobile: normalizePhone(v.phone) });
+    if (!probe) {
+      console.error('[meritto] ALL auth schemes returned 401. Check that access/secret keys are correct and that your tenant is active.');
+      return {
+        status: 'failed',
+        error: 'Auth failed (all schemes returned 401). Verify keys in Vercel env vars.',
+      };
+    }
+
+    // Step 2: interpret lookup result
+    if (probe.result.ok && lookupResponseHasLead(probe.result.data)) {
       console.log(`[meritto] existing lead found for ${normalizePhone(v.phone)} — skipping per policy`);
       return {
         status: 'skipped',
         message: 'Existing lead found — skipped per policy',
       };
     }
-    return await createLead(cfg, v);
+
+    // Step 3: createOrUpdate with the scheme that worked
+    const createResult = await callOnce(
+      cfg.apiUrl,
+      buildCreatePayload(v, cfg),
+      cfg,
+      probe.scheme,
+      'create',
+    );
+
+    const cd = createResult.data as {
+      status?: string | boolean;
+      message?: string;
+      error?: string;
+      lead_id?: string;
+      leadId?: string;
+      data?: { lead_id?: string; leadId?: string };
+    };
+
+    const statusStr = (typeof cd.status === 'string' ? cd.status : '').toLowerCase();
+    const isErrorStatus =
+      cd.status === false ||
+      statusStr === 'error' ||
+      statusStr === 'failed' ||
+      statusStr === 'failure';
+    const errMessage = cd.error || cd.message;
+
+    const looksDuplicate =
+      isErrorStatus &&
+      typeof errMessage === 'string' &&
+      /duplicate|already\s*exist|exists/i.test(errMessage);
+
+    if (looksDuplicate) {
+      return { status: 'duplicate', message: errMessage };
+    }
+
+    if (!createResult.ok || isErrorStatus) {
+      return {
+        status: 'failed',
+        error: errMessage || `HTTP ${createResult.status}`,
+      };
+    }
+
+    const leadId = cd.lead_id || cd.leadId || cd.data?.lead_id || cd.data?.leadId;
+    return {
+      status: 'created',
+      leadId,
+      message: 'Lead created in Meritto',
+    };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     console.error('[meritto] unexpected error:', err);
