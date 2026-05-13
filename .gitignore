@@ -17,6 +17,7 @@ dist/
 .env.test.local
 .env.production.local
 .env.production
+.env.example
 
 # Logs
 *.log
