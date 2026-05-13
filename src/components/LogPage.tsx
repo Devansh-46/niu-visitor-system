@@ -117,7 +117,7 @@ export function LogPage({ visitors, onReprint, onDelete, onClear, onExport, onSy
                   <PurposePill purpose={v.purpose} />
                 </Td>
                 <Td>
-                  <CrmPill status={v.merittoStatus} />
+                  <CrmPill status={v.merittoStatus} error={v.merittoError} />
                 </Td>
                 <Td>
                   <div className="font-mono text-xs">{v.date}</div>
@@ -182,18 +182,21 @@ function PurposePill({ purpose }: { purpose: string }) {
   );
 }
 
-function CrmPill({ status }: { status?: string }) {
+function CrmPill({ status, error }: { status?: string; error?: string }) {
   if (!status || status === 'pending') {
     return <span className="text-xs text-muted">…</span>;
   }
   const styles: Record<string, string> = {
     created: 'bg-green-100 text-green-800',
-    updated: 'bg-blue-100 text-blue-800',
     skipped: 'bg-gray-100 text-gray-600',
-    failed: 'bg-red-100 text-red-700',
+    duplicate: 'bg-amber-100 text-amber-800',
+    failed: 'bg-red-100 text-red-700 cursor-help',
   };
   return (
-    <span className={`inline-block px-2.5 py-0.5 rounded-xl text-[11px] font-medium ${styles[status] || ''}`}>
+    <span
+      title={status === 'failed' && error ? error : undefined}
+      className={`inline-block px-2.5 py-0.5 rounded-xl text-[11px] font-medium ${styles[status] || ''}`}
+    >
       {status}
     </span>
   );

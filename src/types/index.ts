@@ -5,6 +5,13 @@ export type VisitorPurpose =
   | 'VC Office'
   | 'Academics';
 
+export type MerittoStatus =
+  | 'pending'
+  | 'created'
+  | 'skipped'
+  | 'duplicate'
+  | 'failed';
+
 export interface Visitor {
   id: string;
   serial: number;
@@ -21,7 +28,7 @@ export interface Visitor {
   photoUrl: string;
   photoPath: string;
   operator: string;
-  merittoStatus?: 'pending' | 'created' | 'updated' | 'skipped' | 'failed';
+  merittoStatus?: MerittoStatus;
   merittoLeadId?: string;
   merittoError?: string;
 }
@@ -46,7 +53,7 @@ export interface MerittoLeadPayload {
 }
 
 export interface MerittoResponse {
-  status: 'created' | 'updated' | 'skipped' | 'failed';
+  status: MerittoStatus;
   leadId?: string;
   message?: string;
   error?: string;
