@@ -22,10 +22,10 @@ interface MerittoConfig {
 }
 
 function getConfig(): MerittoConfig | null {
-  const apiUrl = process.env.MERITTO_API_URL;
-  const accessKey = process.env.MERITTO_ACCESS_KEY;
-  const secretKey = process.env.MERITTO_SECRET_KEY;
-  const source = process.env.MERITTO_SOURCE_NAME;
+  const apiUrl = process.env.MERITTO_API_URL?.trim();
+  const accessKey = process.env.MERITTO_ACCESS_KEY?.trim();
+  const secretKey = process.env.MERITTO_SECRET_KEY?.trim();
+  const source = process.env.MERITTO_SOURCE_NAME?.trim();
   if (!apiUrl || !accessKey || !secretKey || !source) return null;
   return {
     apiUrl,
@@ -104,6 +104,7 @@ export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
     };
 
     console.log(`[meritto] POST ${cfg.apiUrl}`);
+    console.log(`[meritto] headers: access-key=${cfg.accessKey.slice(0, 6)}***, secret-key=${cfg.secretKey.slice(0, 6)}***`);
     console.log(`[meritto] payload: ${redact(payloadStr, cfg)}`);
 
     const res = await fetch(cfg.apiUrl, {
