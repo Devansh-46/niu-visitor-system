@@ -9,7 +9,6 @@ import { nextSerial, generateVisitorId } from '@/lib/storage';
 const PURPOSES: VisitorPurpose[] = [
   'HR',
   'Admission Enquiry - New',
-  'Admission Enquiry - Re Visit',
   'VC Office',
   'Academics',
 ];

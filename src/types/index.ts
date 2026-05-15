@@ -1,15 +1,13 @@
 export type VisitorPurpose =
   | 'HR'
   | 'Admission Enquiry - New'
-  | 'Admission Enquiry - Re Visit'
   | 'VC Office'
   | 'Academics';
 
 export type MerittoStatus =
   | 'pending'
   | 'created'
-  | 'skipped'
-  | 'duplicate'
+  | 'updated'
   | 'failed';
 
 export interface Visitor {

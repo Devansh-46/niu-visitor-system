@@ -43,7 +43,7 @@ export default function Home() {
 
   /**
    * Push to Meritto via our server API route.
-   * - Existing enquiries are skipped on the server.
+   * - Every visitor is pushed via createOrUpdate (API handles deduplication).
    * - Updates the visitor record with CRM status when complete.
    */
   const pushMeritto = useCallback(async (v: Visitor) => {

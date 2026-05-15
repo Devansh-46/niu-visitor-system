@@ -188,8 +188,7 @@ function CrmPill({ status, error }: { status?: string; error?: string }) {
   }
   const styles: Record<string, string> = {
     created: 'bg-green-100 text-green-800',
-    skipped: 'bg-gray-100 text-gray-600',
-    duplicate: 'bg-amber-100 text-amber-800',
+    updated: 'bg-blue-100 text-blue-700',
     failed: 'bg-red-100 text-red-700 cursor-help',
   };
   return (
