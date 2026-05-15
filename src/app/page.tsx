@@ -138,6 +138,12 @@ export default function Home() {
   }, [visitors, persistVisitors, pushMeritto, syncSingle, sendVisitorEmail, config.autoEmail]);
 
   const handleDelete = useCallback((id: string) => {
+    const pwd = window.prompt('Enter passcode to delete this entry:');
+    if (pwd === null) return;
+    if (pwd !== 'admin1536') {
+      toast('Incorrect passcode. Delete cancelled.', 'error');
+      return;
+    }
     if (!confirm('Delete this visitor entry? This cannot be undone.')) return;
     const next = visitors.filter((v) => v.id !== id);
     persistVisitors(next);
@@ -145,6 +151,12 @@ export default function Home() {
   }, [visitors, persistVisitors]);
 
   const handleClear = useCallback(() => {
+    const pwd = window.prompt('Enter passcode to clear the entire log:');
+    if (pwd === null) return;
+    if (pwd !== 'admin1536') {
+      toast('Incorrect passcode. Clear cancelled.', 'error');
+      return;
+    }
     if (!confirm('Clear ALL visitor data? This cannot be undone. Make sure you have exported a backup first.')) return;
     persistVisitors([]);
     toast('Log cleared');

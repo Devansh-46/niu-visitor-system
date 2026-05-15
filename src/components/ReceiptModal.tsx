@@ -63,9 +63,7 @@ export function ReceiptModal({ visitor, onClose }: Props) {
           {/* Header */}
           <div className="bg-niu-navy text-white px-6 py-5 border-b-4 border-niu-gold">
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-niu-gold text-niu-navy flex items-center justify-center font-serif font-extrabold text-2xl rounded">
-                N
-              </div>
+              <img src="/logo.png" alt="NIU Logo" className="w-12 h-12 object-contain" />
               <div>
                 <h2 className="font-serif text-xl font-semibold leading-tight">
                   Noida International University

@@ -69,6 +69,13 @@ export function EntryPage({
       return;
     }
 
+    const pwd = window.prompt('Enter passcode to register & generate receipt:');
+    if (pwd === null) return;            // cancelled
+    if (pwd !== 'niu2026') {
+      toast('Incorrect passcode. Registration cancelled.', 'error');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const now = new Date();

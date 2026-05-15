@@ -1,4 +1,5 @@
 import { Visitor, MerittoResponse } from '@/types';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 /**
  * Meritto / NPF CRM integration.
@@ -107,13 +108,20 @@ export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
     console.log(`[meritto] headers: access-key=${cfg.accessKey.slice(0, 6)}***, secret-key=${cfg.secretKey.slice(0, 6)}***`);
     console.log(`[meritto] payload: ${redact(payloadStr, cfg)}`);
 
-    const res = await fetch(cfg.apiUrl, {
+    const fetchOptions: RequestInit = {
       method: 'POST',
       headers,
       body: payloadStr,
       redirect: 'follow',
       cache: 'no-store',
-    });
+    };
+
+    if (process.env.FIXIE_URL) {
+      // @ts-ignore - The types for node-fetch / undici mismatch slightly, but this works in Next.js Node runtime
+      fetchOptions.agent = new HttpsProxyAgent(process.env.FIXIE_URL);
+    }
+
+    const res = await fetch(cfg.apiUrl, fetchOptions);
 
     const text = await res.text();
     console.log(`[meritto] response ${res.status}: ${redact(text, cfg)}`);
