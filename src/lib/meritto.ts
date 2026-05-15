@@ -112,6 +112,7 @@ export async function pushToMeritto(v: Visitor): Promise<MerittoResponse> {
       headers,
       body: payloadStr,
       redirect: 'follow',
+      cache: 'no-store',
     });
 
     const text = await res.text();
