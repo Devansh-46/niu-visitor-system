@@ -132,7 +132,7 @@ export default function Home() {
     toast('✓ Visitor registered: ' + v.id);
 
     // Fire-and-forget integrations
-    pushMeritto(v);
+    if (v.purpose === 'Admission Enquiry - New') pushMeritto(v);
     syncSingle(v);
     if (config.autoEmail) sendVisitorEmail(v);
   }, [visitors, persistVisitors, pushMeritto, syncSingle, sendVisitorEmail, config.autoEmail]);
