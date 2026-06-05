@@ -39,16 +39,36 @@ input:focus, select:focus, textarea:focus {
 
 /* Print styles — A5 receipt */
 @media print {
-  body * { visibility: hidden; }
-  .receipt-wrap, .receipt-wrap * { visibility: visible; }
-  .receipt-actions { display: none !important; }
-  .receipt-wrap {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 148mm;
-    max-width: 148mm;
-    box-shadow: none;
+  html, body {
+    min-height: 0 !important;
+    height: auto !important;
+    background: #fff !important;
+    background-image: none !important;
   }
+
+  body > *:not(.receipt-portal) { display: none !important; }
+
+  .receipt-portal {
+    position: static !important;
+    display: block !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+    overflow: visible !important;
+  }
+
+  .receipt-wrap {
+    position: static !important;
+    width: 148mm !important;
+    max-width: 148mm !important;
+    max-height: none !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+
+  .receipt-actions { display: none !important; }
+
   @page { size: A5; margin: 0; }
 }

@@ -34,7 +34,7 @@ export function ReceiptModal({ visitor, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 bg-niu-deep/60 z-[1000] flex items-center justify-center p-5 overflow-y-auto"
+      className="receipt-portal fixed inset-0 bg-niu-deep/60 z-[1000] flex items-center justify-center p-5 overflow-y-auto"
       onClick={onClose}
     >
       <div

@@ -15,7 +15,11 @@ export function getVisitors(): Visitor[] {
 
 export function saveVisitors(visitors: Visitor[]): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORE_KEY, JSON.stringify(visitors));
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(visitors));
+  } catch (e) {
+    console.error('saveVisitors failed:', e);
+  }
 }
 
 export function getConfig(): AppConfig {

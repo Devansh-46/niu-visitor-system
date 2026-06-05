@@ -94,23 +94,39 @@ export function SettingsPage({ config, onSave }: Props) {
     const code = `function doPost(e) {
   const sheet = SpreadsheetApp.getActiveSheet();
   const data = JSON.parse(e.postData.contents);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000); // stops concurrent add+bulk from racing into dup rows
+  try {
+    const rows = data.action === 'bulk'
+      ? (data.visitors || [])
+      : (data.visitor ? [data.visitor] : []);
+    if (!rows.length) return ok();
 
-  if (data.action === 'add' && data.visitor) {
-    const v = data.visitor;
-    sheet.appendRow([
-      v.id, v.date, v.time, v.name, v.phone, v.email,
-      v.purpose, v.program, v.meetWith, v.notes, v.photoUrl || '', v.operator
-    ]);
-  } else if (data.action === 'bulk' && data.visitors) {
-    const rows = data.visitors.map(v => [
-      v.id, v.date, v.time, v.name, v.phone, v.email,
-      v.purpose, v.program, v.meetWith, v.notes, v.photoUrl || '', v.operator
-    ]);
-    if (rows.length > 0) {
-      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 12).setValues(rows);
+    const lastRow = sheet.getLastRow();
+    const idMap = {};
+    if (lastRow >= 2) {
+      const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+      for (let i = 0; i < ids.length; i++) idMap[ids[i][0]] = i + 2;
     }
-  }
 
+    rows.forEach(function (v) {
+      const row = [v.id, v.date, v.time, v.name, v.phone, v.email,
+        v.purpose, v.program, v.meetWith, v.notes, v.photoUrl || '', v.operator];
+      const existing = idMap[v.id];
+      if (existing) {
+        sheet.getRange(existing, 1, 1, row.length).setValues([row]);
+      } else {
+        sheet.appendRow(row);
+        idMap[v.id] = sheet.getLastRow();
+      }
+    });
+    return ok();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function ok() {
   return ContentService.createTextOutput(JSON.stringify({ status: 'ok' }))
     .setMimeType(ContentService.MimeType.JSON);
 }`;
