@@ -11,6 +11,8 @@ const PURPOSES: VisitorPurpose[] = [
   'Admission Enquiry - New',
   'VC Office',
   'Academics',
+  'Placement',
+  'Marketing',
 ];
 
 const PROGRAMS = [
@@ -189,16 +191,6 @@ export function EntryPage({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-              <Field label="Program of Interest">
-                <select
-                  value={form.program}
-                  onChange={(e) => update('program', e.target.value)}
-                  className={inputCls}
-                >
-                  <option value="">-- Optional --</option>
-                  {PROGRAMS.map((p) => <option key={p}>{p}</option>)}
-                </select>
-              </Field>
               <Field label="Person to Meet / Department">
                 <input
                   type="text"

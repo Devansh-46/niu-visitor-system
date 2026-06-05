@@ -2,7 +2,9 @@ export type VisitorPurpose =
   | 'HR'
   | 'Admission Enquiry - New'
   | 'VC Office'
-  | 'Academics';
+  | 'Academics'
+  | 'Placement'
+  | 'Marketing';
 
 export type MerittoStatus =
   | 'pending'
