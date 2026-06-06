@@ -94,7 +94,7 @@ export function EntryPage({
       } catch (err) {
         console.error('Photo upload failed:', err);
         toast('Photo not saved (offline) — entry recorded without photo', 'error');
-        photoUrl = '';   // was: photoUrl = photo;  <-- this line caused the data loss
+        photoUrl = photo;   // fall back to local base64 so photo is visible in receipt
       }
 
       const visitor: Visitor = {
